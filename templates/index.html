@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mouth Dino Game</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="page">
+    <section class="panel">
+      <header class="titleRow">
+        <div>
+          <h1>Mouth Dino Game</h1>
+          <p class="subtitle">Open your mouth to start and jump. Space works as a debug fallback.</p>
+        </div>
+      </header>
+
+      <div class="layout">
+        <section class="gameSection">
+          <div class="hud">
+            <span id="scoreText">Score: 0</span>
+            <span id="messageText">Allow camera access, then open your mouth to start.</span>
+          </div>
+
+          <canvas id="gameCanvas" width="900" height="260"></canvas>
+
+          <div class="controls">
+            <button id="restartButton" type="button">Restart</button>
+          </div>
+        </section>
+
+        <aside class="cameraPanel">
+          <h2>Camera</h2>
+          <video id="webcam" autoplay playsinline muted></video>
+          <p id="aiText">AI: Waiting for camera...</p>
+          <p id="confidenceText">Confidence: -</p>
+          <p class="hint">
+            Configure Roboflow in <code>.env</code>. Label <code>mouth_open</code> should start the game and make the dino jump.
+          </p>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
