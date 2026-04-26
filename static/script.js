@@ -6,9 +6,7 @@ const restartButton = document.getElementById("restartButton");
 const webcam = document.getElementById("webcam");
 const aiText = document.getElementById("aiText");
 const confidenceText = document.getElementById("confidenceText");
-
-const captureCanvas = document.createElement("canvas");
-const captureCtx = captureCanvas.getContext("2d");
+const TM_CONFIG = window.TM_CONFIG ?? {};
 
 const GAME_WIDTH = canvas.width;
 const GAME_HEIGHT = canvas.height;
@@ -18,7 +16,14 @@ const GRAVITY = 0.7;
 const JUMP_STRENGTH = -14;
 const START_SPEED = 6;
 const ACTION_COOLDOWN = 550;
-const PREDICTION_INTERVAL = 250;
+const PREDICTION_INTERVAL = toFiniteNumber(TM_CONFIG.predictionIntervalMs, 150);
+const TM_MODEL_BASE_PATH = normalizeModelBasePath(
+  String(TM_CONFIG.modelBasePath ?? "/static/tm-model/")
+);
+const TM_OPEN_LABEL = String(TM_CONFIG.openLabel ?? "mouth_open")
+  .trim()
+  .toLowerCase();
+const TM_OPEN_THRESHOLD = toFiniteNumber(TM_CONFIG.openThreshold, 0.85);
 
 const player = {
   x: 90,
@@ -42,6 +47,17 @@ let gameState = "ready";
 let previousMouthOpen = false;
 let lastAiActionTime = 0;
 let isPredicting = false;
+let tmModel = null;
+let cameraReady = false;
+
+function normalizeModelBasePath(basePath) {
+  return basePath.endsWith("/") ? basePath : `${basePath}/`;
+}
+
+function toFiniteNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
 
 function resetPlayer() {
   player.baseY = GROUND_Y - player.height;
@@ -305,7 +321,10 @@ function gameLoop() {
 
 function updateAiStatus(label, confidence) {
   aiText.textContent = `AI: ${label}`;
-  confidenceText.textContent = `Confidence: ${Math.round(confidence * 100)}%`;
+  confidenceText.textContent =
+    typeof confidence === "number"
+      ? `Confidence: ${Math.round(confidence * 100)}%`
+      : "Confidence: -";
 }
 
 function handlePrediction(data) {
@@ -328,48 +347,6 @@ function handlePrediction(data) {
   previousMouthOpen = mouthOpen;
 }
 
-async function predictMouth() {
-  if (isPredicting || webcam.readyState < 2) {
-    return;
-  }
-
-  isPredicting = true;
-
-  try {
-    captureCanvas.width = 160;
-    captureCanvas.height = 120;
-    captureCtx.drawImage(webcam, 0, 0, captureCanvas.width, captureCanvas.height);
-
-    const blob = await new Promise((resolve) =>
-      captureCanvas.toBlob(resolve, "image/jpeg", 0.75)
-    );
-
-    if (!blob) {
-      throw new Error("Could not capture webcam frame.");
-    }
-
-    const formData = new FormData();
-    formData.append("frame", blob, "frame.jpg");
-
-    const response = await fetch("/predict", {
-      method: "POST",
-      body: formData
-    });
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.error || "Prediction failed.");
-    }
-
-    handlePrediction(data);
-  } catch (error) {
-    aiText.textContent = `AI: ${error.message}`;
-    confidenceText.textContent = "Confidence: -";
-  } finally {
-    isPredicting = false;
-  }
-}
-
 async function startCamera() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -378,16 +355,133 @@ async function startCamera() {
     });
 
     webcam.srcObject = stream;
-    aiText.textContent = "AI: Camera ready";
-    confidenceText.textContent = "Confidence: waiting for prediction";
-
-    if (predictionLoopId === null) {
-      predictionLoopId = window.setInterval(predictMouth, PREDICTION_INTERVAL);
-    }
+    cameraReady = true;
+    refreshAiReadyState();
+    startPredictionLoop();
   } catch (error) {
     aiText.textContent = "AI: Camera access failed";
     confidenceText.textContent = error.message;
     messageText.textContent = "Camera access is required for AI control. Space still works.";
+  }
+}
+
+function refreshAiReadyState() {
+  if (!cameraReady && !tmModel) {
+    aiText.textContent = "AI: Waiting for camera and model";
+    confidenceText.textContent = "Confidence: -";
+    return;
+  }
+
+  if (cameraReady && !tmModel) {
+    aiText.textContent = "AI: Camera ready";
+    confidenceText.textContent = "Confidence: waiting for model";
+    return;
+  }
+
+  if (!cameraReady && tmModel) {
+    aiText.textContent = "AI: Model loaded";
+    confidenceText.textContent = "Confidence: waiting for camera";
+    return;
+  }
+
+  aiText.textContent = "AI: Ready";
+  confidenceText.textContent = "Confidence: waiting for prediction";
+}
+
+function startPredictionLoop() {
+  if (predictionLoopId !== null || !cameraReady || !tmModel) {
+    return;
+  }
+
+  predictionLoopId = window.setInterval(predictMouth, PREDICTION_INTERVAL);
+}
+
+function getTopPrediction(predictions) {
+  return predictions.reduce((bestPrediction, currentPrediction) =>
+    currentPrediction.probability > bestPrediction.probability
+      ? currentPrediction
+      : bestPrediction
+  );
+}
+
+function formatModelLoadError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (message.includes("404")) {
+    return `Model files not found in ${TM_MODEL_BASE_PATH}`;
+  }
+
+  if (message.includes("Failed to fetch")) {
+    return `Could not load model from ${TM_MODEL_BASE_PATH}`;
+  }
+
+  return message;
+}
+
+async function loadTeachableMachineModel() {
+  if (!window.tmImage) {
+    throw new Error("Teachable Machine image library did not load.");
+  }
+
+  const modelURL = `${TM_MODEL_BASE_PATH}model.json`;
+  const metadataURL = `${TM_MODEL_BASE_PATH}metadata.json`;
+
+  tmModel = await window.tmImage.load(modelURL, metadataURL);
+
+  const classLabels =
+    typeof tmModel.getClassLabels === "function"
+      ? tmModel.getClassLabels().map((label) => String(label).trim().toLowerCase())
+      : [];
+
+  if (!classLabels.includes(TM_OPEN_LABEL)) {
+    throw new Error(`Model does not include the "${TM_OPEN_LABEL}" class.`);
+  }
+
+  refreshAiReadyState();
+  startPredictionLoop();
+}
+
+async function predictMouth() {
+  if (isPredicting || !tmModel || webcam.readyState < 2) {
+    return;
+  }
+
+  isPredicting = true;
+
+  try {
+    const predictions = await tmModel.predict(webcam, true);
+
+    if (!Array.isArray(predictions) || predictions.length === 0) {
+      throw new Error("Model returned no predictions.");
+    }
+
+    const topPrediction = getTopPrediction(predictions);
+
+    handlePrediction({
+      label: topPrediction.className,
+      confidence: topPrediction.probability,
+      mouthOpen:
+        String(topPrediction.className).trim().toLowerCase() === TM_OPEN_LABEL &&
+        topPrediction.probability >= TM_OPEN_THRESHOLD
+    });
+  } catch (error) {
+    aiText.textContent = `AI: ${error.message}`;
+    confidenceText.textContent = "Confidence: -";
+  } finally {
+    isPredicting = false;
+  }
+}
+
+async function initAi() {
+  await startCamera();
+
+  try {
+    await loadTeachableMachineModel();
+  } catch (error) {
+    aiText.textContent = "AI: Add your Teachable Machine export";
+    confidenceText.textContent = "Confidence: waiting for model files";
+    messageText.textContent = "AI model not added yet. Space still works until you add the export.";
+    console.error(formatModelLoadError(error));
   }
 }
 
@@ -411,7 +505,7 @@ restartButton.addEventListener("click", () => {
 });
 
 resetGame();
-startCamera();
+initAi();
 
 if (animationId === null) {
   gameLoop();
