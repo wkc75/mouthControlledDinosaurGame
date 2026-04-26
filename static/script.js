@@ -18,7 +18,7 @@ const START_SPEED = 6;
 const ACTION_COOLDOWN = 550;
 const PREDICTION_INTERVAL = toFiniteNumber(TM_CONFIG.predictionIntervalMs, 150);
 const TM_MODEL_BASE_PATH = normalizeModelBasePath(
-  String(TM_CONFIG.modelBasePath ?? "/static/tm-model/")
+  String(TM_CONFIG.modelBasePath ?? "./static/tm-model/")
 );
 const TM_OPEN_LABEL = String(TM_CONFIG.openLabel ?? "mouth_open")
   .trim()
